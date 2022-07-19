@@ -1,0 +1,141 @@
+resource "aws_appstream_fleet" "appstream" {
+  name = "${local.name}-${var.appstream}-Fleet-v1"
+
+  compute_capacity {
+    desired_instances = 1
+  }
+
+  description                        = "${local.name}-${var.appstream}-Fleet"
+  idle_disconnect_timeout_in_seconds = 3600
+  display_name                       = "${local.name}-${var.appstream}-Fleet"
+  enable_default_internet_access     = false
+  fleet_type                         = "ON_DEMAND"
+  image_name                         = "AppStream-WinServer2019-03-03-2022"
+  instance_type                      = "stream.standard.medium"
+  max_user_duration_in_seconds       = 3600
+  stream_view                        = "APP"
+  disconnect_timeout_in_seconds      = 3600
+  iam_role_arn                       = aws_iam_role.appstream_role.arn
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private[0].id, aws_subnet.private[1].id]
+    security_group_ids = [aws_security_group.test.id]
+  }
+
+  tags = merge(
+    {
+      Name                         = format("%s-%s-%s-%s-%s", local.name, var.product, local.environment, var.appstream, var.fleet_suffix),
+
+  depends_on = [aws_appstream_stack.appstream]
+
+}
+
+resource "aws_appstream_fleet_stack_association" "appstream" {
+  fleet_name = aws_appstream_fleet.appstream.name
+  stack_name = aws_appstream_stack.appstream.name
+
+  depends_on = [aws_appstream_stack.appstream, aws_appstream_fleet.appstream]
+}
+
+
+
+######## scaling policy #############
+
+resource "aws_appautoscaling_target" "appstream" {
+  service_namespace  = "appstream"
+  scalable_dimension = "appstream:fleet:DesiredCapacity"
+  resource_id        = "fleet/${aws_appstream_fleet.appstream.id}"
+  min_capacity       = 1
+  max_capacity       = 5
+  #role_arn = aws_iam_role.appstream_role.arn
+}
+
+### scaleout policy
+resource "aws_cloudwatch_metric_alarm" "appstream_scaleout" {
+  alarm_name          = "${var.appstream}-${aws_appstream_fleet.appstream.name}-Scaleout-Alarm"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 3
+  metric_name         = "CapacityUtilization"
+  namespace           = "AWS/AppStream"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 75
+  alarm_description   = "This metric monitors Appstream fleet scaleout policy"
+  datapoints_to_alarm = 3
+  alarm_actions = [
+    aws_appautoscaling_policy.appstream_scaleout.arn
+  ]
+  insufficient_data_actions = []
+
+  dimensions = {
+    Fleet = aws_appstream_fleet.appstream.id
+  }
+
+  depends_on = [aws_appautoscaling_policy.appstream_scaleout]
+
+}
+
+resource "aws_appautoscaling_policy" "appstream_scaleout" {
+  name               = "Scale-out"
+  policy_type        = "StepScaling"
+  resource_id        = aws_appautoscaling_target.appstream.resource_id
+  scalable_dimension = aws_appautoscaling_target.appstream.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.appstream.service_namespace
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ChangeInCapacity"
+    cooldown                = 120
+    metric_aggregation_type = "Average"
+
+    step_adjustment {
+      metric_interval_upper_bound = 0
+      scaling_adjustment          = 5
+    }
+  }
+}
+
+
+#### scalein policy
+
+resource "aws_cloudwatch_metric_alarm" "appstream_scalein" {
+  alarm_name          = "${var.appstream}-${aws_appstream_fleet.appstream.name}-Scalein-Alarm"
+  comparison_operator = "LessThanOrEqualToThreshold"
+  evaluation_periods  = 10
+  metric_name         = "CapacityUtilization"
+  namespace           = "AWS/AppStream"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 25
+  alarm_description   = "This metric monitors Appstream fleet scalein policy"
+  datapoints_to_alarm = 10
+  alarm_actions = [
+    aws_appautoscaling_policy.appstream_scalein.arn
+  ]
+  insufficient_data_actions = []
+
+  dimensions = {
+    Fleet = aws_appstream_fleet.appstream.id
+  }
+
+  depends_on = [aws_appautoscaling_policy.appstream_scalein]
+
+}
+
+resource "aws_appautoscaling_policy" "appstream_scalein" {
+  name               = "Scale-in"
+  policy_type        = "StepScaling"
+  resource_id        = aws_appautoscaling_target.appstream.resource_id
+  scalable_dimension = aws_appautoscaling_target.appstream.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.appstream.service_namespace
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ChangeInCapacity"
+    cooldown                = 120
+    metric_aggregation_type = "Average"
+
+    step_adjustment {
+      metric_interval_upper_bound = 0
+      scaling_adjustment          = -5
+    }
+  }
+}
